@@ -14,6 +14,14 @@ use Net::Prometheus;
 use Plack::Builder;
 
 my $debug = 0;
+my @std_pids = (
+	{pid => "0104", name => "LOAD",	   descr => "Calclated engine load",		offset => -1, bits => 8,  scale => 100 / 255, fmt => "%.1f %%", type => "percent"},
+	{pid => "010c", name => "RPM",	   descr => "Engine speed",			offset => -1, bits => 16, scale => 1 / 4, fmt => "%.2f RPM", type => "rpm"},
+	{pid => "010d", name => "SPEED",   descr => "Vehicle speed",			offset => -1, bits => 8,  scale => 1 / 1.6, fmt => "%.2f MPH", type => "mph"},
+	{pid => "010f", name => "IAT",	   descr => "Intake air temperature",		offset => -1, bits => 8,  scale => 9 / 5, bias => -40, fmt => "%d degF", type => "temp"},
+	{pid => "0111", name => "TP",	   descr => "Throttle position",		offset => -1, bits => 8,  scale => 100 / 255, fmt => "%.1f %%", type => "percent"},
+	{pid => "0146", name => "AT",	   descr => "Ambient air temperature",		offset => -1, bits => 8,  scale => 9 / 5, bias => -40, fmt => "%d degF", type => "temp"},
+);
 my @trans_pids = (
 	{pid => "2211b6", name => "TR",	   descr => "Transmission Range Status",	offset => 0, bits => 8,  scale => 1 / 2, fmt => "%d", type => "bits"},
 	{pid => "2216b5", name => "TR_D",  descr => "Transmission Range Bits",		offset => 0, bits => 8,  fmt => "0x%02X", type => "bits"},
@@ -109,12 +117,26 @@ sub prep_obd2 {
 	do_cmd "at h1";
 	do_cmd "at sp 1";
 	do_cmd "at dp";
-	do_cmd "at sh c4 10 f1";
 }
 
 sub update_metrics {
 	system("tput cup 0 0");
-	my %obj = ();
+
+	# reset to defaults and grab standard pids
+
+	do_cmd "at d";
+	do_cmd "at h1";
+	do_cmd "at sp 1";
+
+	my $json = do_group("std", \@std_pids);
+	publish("std", $json);
+
+	# do ford specific pids
+
+	do_cmd "at h1";
+	do_cmd "at sp 1";
+	do_cmd "at sh c4 10 f1";
+
 	while (my ($group, $g) = each %groups) {
 		my $json = do_group($group, $g);
 		publish($group, $json);
@@ -136,8 +158,12 @@ sub do_group {
 		my $formatted = "-";
 		my $valstr = "-";
 		my $val = undef;
-		if ($status eq "ok") {
+		print "RES ", Dumper($obd->{results}) if $debug;
+		if ($status eq "ok" && defined($obd->{results}->{"10"})) {
 			my $r = $obd->{results}->{"10"}->{result};
+			if ($p->{offset} == -1) {
+				$r = [-1, -1, (@$r)];
+			}
 			$val = defined($r->[2]) ? $r->[2] : 0;
 			if ($p->{bits} == 16 && defined($r->[3])) {
 				$val = $val * 256 + $r->[3];
